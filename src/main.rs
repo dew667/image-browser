@@ -1,7 +1,11 @@
 use std::path::{self, PathBuf};
 
-use iced::{alignment::Horizontal, color, widget::{button, column, container, image, row, scrollable, text, Column, Row}, Element, Length, Theme};
+use iced::{alignment::Horizontal, color, overlay::menu::Style, widget::{button::{self, Button, Status}, column, container, image, row, scrollable, text, Column, Row}, Element, Length, Theme};
 use rfd::FileDialog;
+
+mod button_style;
+use button_style::default;
+use button_style::primary;
 
 #[derive(Default)]
 struct State {
@@ -13,6 +17,7 @@ struct State {
 enum Message {
     ChangeDirectory(PathBuf),
     SelectImage,
+    NoOp,
 }
 
 impl State {
@@ -33,30 +38,50 @@ impl State {
                     eprintln!("Error: {} is not a directory", path.display());
                 }
             }, 
+            Message::NoOp => {
+                // No operation, can be used for future actions
+            },
         }
     }
 
     fn view(&self) -> Element<Message> {
         let top_bar = row![
-            text("✔ Image Browser")
-                .size(20)
-                .align_x(Horizontal::Left)
-                .width(Length::FillPortion(2)),
+            row![
+                text("📷").size(20), // Camera icon as a placeholder logo
+                text("Image Browser")
+                    .size(20)
+                    .align_x(Horizontal::Left)
+            ]
+            .spacing(5)
+            .width(Length::FillPortion(2)),
 
             row![
-                button("Open").on_press(Message::SelectImage),
-                button("Next"),
-                button("Previous"), 
-                button("Zoom"), 
-                button("Share"),
-                button("Fullscreen"),
+                Button::new(text("Open"))
+                    .on_press(Message::SelectImage)
+                    .style(|theme, status| default(theme, status)),
+                Button::new(text("Next"))
+                    .on_press(Message::NoOp)
+                    .style(|theme, status| default(theme, status)),
+                Button::new(text("Previous"))
+                    .on_press(Message::NoOp)
+                    .style(|theme, status| default(theme, status)),
+                Button::new(text("Zoom"))
+                    .on_press(Message::NoOp)
+                    .style(|theme, status| default(theme, status)),
+                Button::new(text("Share"))
+                    .on_press(Message::NoOp)
+                    .style(|theme, status| default(theme, status)),
+                container(
+                    Button::new(text("Fullscreen"))
+                        .on_press(Message::NoOp)
+                        .style(|theme, status| primary(theme, status)),
+                )
+                .align_x(Horizontal::Right)
+                .width(Length::Fill),
             ]
             .spacing(10)
             .width(Length::FillPortion(3))
-        ]
-        .align_y(iced::alignment::Vertical::Center)
-        .padding(10)
-        .spacing(10);
+        ].spacing(10);
 
         // File Tree Sidebar (Left)
         let file_tree = container(
