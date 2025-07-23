@@ -1,4 +1,4 @@
-use iced::{border, widget::button::{Status, Style}, Background, Border, Color, Shadow, Theme, Vector};
+use iced::{border, color, widget::button::{Status, Style}, Background, Border, Color, Shadow, Theme, Vector};
 
 pub fn default(theme: &Theme, status: Status) -> Style {
     let (background, text_color) = match status {
@@ -61,5 +61,32 @@ pub fn primary(_theme: &Theme, status: Status) -> Style {
             color: Color::TRANSPARENT,
         },
         text_color,
+    }
+}
+
+pub fn transparent(_theme: &Theme, _status: Status) -> Style {
+    Style {
+        background: Some(Background::Color(Color::TRANSPARENT)),
+        shadow: Shadow {
+            offset: Vector::new(0.0, 0.0),
+            blur_radius: 4.0.into(),
+            color: Color::TRANSPARENT,
+        },
+        border: Border {
+            radius: 4.0.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        text_color: Color::BLACK,
+    }
+}
+
+pub fn highlighted(_theme: &Theme, _status: Status) -> Style {
+    Style {
+        background: None,
+        border: border::rounded(4)
+            .width(2)
+            .color(color!(0x00BFFF)), // 亮蓝色边框
+        ..Default::default()
     }
 }
