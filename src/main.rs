@@ -5,10 +5,10 @@ use std::process::Command;
 use iced::futures::future;
 use iced::widget::image::Handle;
 use iced::widget::scrollable::Direction;
-use iced::widget::{button, slider, Container, Stack};
+use iced::widget::{button, slider, Container, Image, Stack};
 use iced::widget::container::{background, transparent};
 use iced::window::icon;
-use iced::{Background, Color, Task};
+use iced::{Background, Color, Error, Task, Vector};
 use iced::{
     Element, Length, Theme,
     alignment::Horizontal,
@@ -85,7 +85,11 @@ struct State {
     last_resize_time: std::time::Instant, // 上次缩放的时间
     preview_scaled_bytes: Vec<u8>, // 用于存储预览缩放后的图片字节
     final_scaled_bytes: Vec<u8>, // 用于存储最终高质量缩放后的图片字节
-    is_resampling_mode: bool
+    is_resampling_mode: bool,
+    hand_tool_active: bool, // 是否启用手型工具
+    is_panning: bool, // 是否正在拖动画布
+    pan_start_position: Option<iced::Point>, // 拖动开始位置
+    pan_offset: iced::Vector, // 拖动偏移量
 }
 
 const COLLECTION_LIMIT: usize = 8;
@@ -110,6 +114,10 @@ enum Message {
     ThumbnailLoaded(PathBuf, Handle), // 缩略图加载完成
     LoadScaledBytes, // 用于加载缩放后的图片字节
     FinalizeDragging, // 新增：完成拖动，执行高质量渲染
+    ToggleHandTool, // 切换手型工具
+    MousePressed(iced::mouse::Event), // 鼠标按下事件
+    MouseReleased(iced::mouse::Event), // 鼠标释放事件
+    MouseMoved(iced::Point), // 鼠标移动事件
 }
 
 
@@ -200,6 +208,10 @@ impl State {
             preview_scaled_bytes: Vec::new(), // 初始化预览缩放字节
             final_scaled_bytes: Vec::new(), // 初始化最终缩放字节
             is_resampling_mode: false, // 初始状态不是缩放模式
+            hand_tool_active: false, // 初始状态未启用手型工具
+            is_panning: false, // 初始状态未拖动画布
+            pan_start_position: None, // 初始拖动开始位置
+            pan_offset: iced::Vector::new(0.0, 0.0), // 初始拖动偏移量
         };
         load_directory_children(state.root_file_tree_entry.as_mut().unwrap(), home_dir.clone());
         state
@@ -507,6 +519,53 @@ impl State {
                 
                 Task::none()
             }
+            Message::ToggleHandTool => {
+                self.hand_tool_active = !self.hand_tool_active;
+                Task::none()
+            }
+            Message::MousePressed(event) => {
+                if self.hand_tool_active {
+                    if let iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left) = event {
+                        self.is_panning = true;
+                        // 注意：这里需要获取鼠标位置，但目前的事件结构可能不包含位置信息
+                        // 我们需要在MouseMoved事件中处理位置
+                        
+                    }
+                }
+                Task::none()
+            }
+            Message::MouseReleased(event) => {
+                if self.hand_tool_active {
+                    if let iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left) = event {
+                        self.is_panning = false;
+                        self.pan_start_position = None;
+                    }
+                }
+                Task::none()
+            }
+            Message::MouseMoved(position) => {
+                if self.hand_tool_active && self.is_panning {
+                    if let Some(last) = self.pan_start_position {
+                        let delta = Vector::new(position.x - last.x, position.y - last.y);
+                        self.pan_offset = self.pan_offset + delta;
+
+                        // 重新裁剪+缩放
+                        if let Some(ref ori) = self.original {
+                            let scale = self.slider_value as f32 / 50.0;
+                            let preview = crop_and_scale(
+                                ori,
+                                scale,
+                                self.pan_offset,
+                                self.resampling_type, // 拖动时用低质量算法
+                            );
+                            self.scaled_bytes = preview.clone();
+                            self.preview_scaled_bytes = preview.clone();
+                        }
+                    }
+                    self.pan_start_position = Some(position);
+                }
+                Task::none()
+            }
         }
     }
 
@@ -532,6 +591,15 @@ impl State {
                     button(text("Zoom"))
                         .on_press(Message::OpenResamplingBar)
                         .style(|theme, status| button_style::default(theme, status)),
+                    button(text("Hand"))
+                        .on_press(Message::ToggleHandTool)
+                        .style(move |theme, status| {
+                            if self.hand_tool_active {
+                                button_style::primary(theme, status) // 激活时使用主要样式
+                            } else {
+                                button_style::default(theme, status) // 未激活时使用默认样式
+                            }
+                        }),
                     button(text("Share"))
                         .on_press(Message::NoOp)
                         .style(|theme, status| button_style::default(theme, status)),
@@ -577,6 +645,10 @@ impl State {
 
         let main_image_display: iced::Element<_> = {
             let handle = if self.is_resampling_mode && !self.scaled_bytes.is_empty() {
+                if self.hand_tool_active {
+                    println!("handle {} {}", self.hand_tool_active, self.scaled_bytes.len());
+                    iced::widget::image::Handle::from_bytes(self.scaled_bytes.clone());
+                }
                 // 使用当前的缩放图像（可能是预览质量或高质量）
                 if self.is_dragging {
                     // 如果正在拖动，使用预览缩放后的图片
@@ -594,9 +666,21 @@ impl State {
                 }
             };
 
-            let img = iced::widget::image(handle)
+            // 关键：把平移偏移量变成负 padding
+            // let translate_x = -self.pan_offset.x;
+            // let translate_y = -self.pan_offset.y;
+
+            let img: iced::widget::Image<Handle> = iced::widget::image(handle)
                 .width(Length::Fill)
                 .height(Length::Fill);
+
+             // 用 Container 的 padding 实现平移
+            let positioned: Element<_> = container(img)
+                // .padding(iced::Padding::from([translate_y, translate_x]))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+                
         
             // 只在打开时显示滑块和算法选择
             let slider_layer = if self.resampling_bar_opened {
@@ -643,8 +727,19 @@ impl State {
                 iced::Element::new(iced::widget::Space::new(0, 0))
             };
         
+            // 如果启用了手型工具，包装图片在MouseArea中以捕获鼠标事件
+            let image_with_mouse_events: Element<_> = if self.hand_tool_active {
+                iced::widget::mouse_area(positioned)
+                    .on_press(Message::MousePressed(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)))
+                    .on_release(Message::MouseReleased(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)))
+                    .on_move(Message::MouseMoved)
+                    .into()
+            } else {
+                positioned
+            };
+        
             Stack::new()
-                .push(img)          // 底层：图片
+                .push(image_with_mouse_events) // 底层：带鼠标事件的图片
                 .push(slider_layer) // 顶层：滑块
                 .into()
         };
@@ -818,6 +913,56 @@ fn scale_image_async(ori_img: Option<image::RgbImage>, slider_value: u8, resampl
         return buf;
     }
     Vec::new()
+}
+
+/// 根据当前缩放倍数 + 平移偏移量，从原图裁一块并放大到显示尺寸
+fn crop_and_scale(
+    ori: &image::RgbImage,
+    scale: f32,          // slider_value / 50.0
+    offset: Vector,      // 用户拖动的像素偏移（相对于显示窗口）
+    resample: ResamplingType,
+) -> Vec<u8> {
+    let (full_w, full_h) = ori.dimensions();
+
+    // 1. 计算“窗口”在放大后图片上的逻辑大小
+    let view_w = (full_w as f32 / scale).max(1.0);   // 逻辑宽
+    let view_h = (full_h as f32 / scale).max(1.0);   // 逻辑高
+
+    // 2. 计算裁剪起点（左上角）
+    let center_x = full_w as f32 / 2.0;
+    let center_y = full_h as f32 / 2.0;
+
+    // 鼠标拖动的 1 个像素对应原图 1 个像素（放大后需再除以 scale）
+    let crop_x = (center_x - view_w / 2.0 - offset.x / scale).max(0.0) as u32;
+    let crop_y = (center_y - view_h / 2.0 - offset.y / scale).max(0.0) as u32;
+
+    let crop_w = view_w.min(full_w as f32 - crop_x as f32) as u32;
+    let crop_h = view_h.min(full_h as f32 - crop_y as f32) as u32;
+
+    // 3. 裁剪
+    let cropped = ori.view(crop_x, crop_y, crop_w, crop_h).to_image();
+    println!("moved: {} {} {} {} {}", crop_x, crop_y, crop_w, crop_h, cropped.len());
+    // 4. 放大回显示尺寸
+    let mut dst = vec![0; (full_w * full_h * 3) as usize];
+    let mut resizer = resize::new(
+        crop_w as usize,
+        crop_h as usize,
+        full_w as usize,
+        full_h as usize,
+        resize::Pixel::RGB8,
+        resample.to_resize_type(),
+    )
+    .unwrap();
+    resizer.resize(
+        cropped.as_raw().as_rgb(),
+        dst.as_rgb_mut(),
+    );
+
+    let out = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(full_w, full_h, dst).unwrap();
+    let mut buf = Vec::new();
+    out.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+        .unwrap();
+    buf
 }
 
 fn find_entry_by_path<'a>(entry: &'a mut FileTreeEntry, path: &PathBuf) -> Option<&'a mut FileTreeEntry> {
