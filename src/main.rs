@@ -3,10 +3,10 @@ use std::path::{self, PathBuf};
 use std::process::Command;
 
 use iced::futures::future;
+use iced::widget::container::{background, transparent};
 use iced::widget::image::Handle;
 use iced::widget::scrollable::Direction;
-use iced::widget::{button, slider, Container, Image, Stack};
-use iced::widget::container::{background, transparent};
+use iced::widget::{Container, Image, Stack, button, slider};
 use iced::window::icon;
 use iced::{Background, Color, Error, Task, Vector};
 use iced::{
@@ -15,12 +15,12 @@ use iced::{
     color,
     widget::{Column, Row, column, container, row, scrollable, text},
 };
-use image::{ImageBuffer, Pixel, Rgb, Rgba, GenericImageView};
-use rgb::FromSlice;
-use rfd::FileDialog;
-use std::thread::sleep;
+use image::{GenericImageView, ImageBuffer, Pixel, Rgb, Rgba};
 use resize::Pixel::RGB8;
-use resize::Type::{Lanczos3, Point, Triangle, Catrom, Mitchell};
+use resize::Type::{Catrom, Lanczos3, Mitchell, Point, Triangle};
+use rfd::FileDialog;
+use rgb::FromSlice;
+use std::thread::sleep;
 
 mod button_style;
 
@@ -45,7 +45,7 @@ impl ResamplingType {
             ResamplingType::Lanczos3 => "Lanczos3",
         }
     }
-    
+
     // 获取对应的resize库算法类型
     fn to_resize_type(&self) -> resize::Type {
         match self {
@@ -56,7 +56,7 @@ impl ResamplingType {
             ResamplingType::Lanczos3 => Lanczos3,
         }
     }
-    
+
     // 获取所有可用算法
     fn all() -> Vec<ResamplingType> {
         vec![
@@ -74,22 +74,22 @@ struct State {
     current_image: Option<PathBuf>,
     root_file_tree_entry: Option<FileTreeEntry>,
     image_collection: Vec<PathBuf>, // 用于存储图片库
-    current_image_index: usize, 
-    resampling_bar_opened: bool, // 是否打开缩放条
-    slider_value: u8, // 用于缩放条的值
-    resampling_type: ResamplingType, // 当前选择的缩放算法
+    current_image_index: usize,
+    resampling_bar_opened: bool,       // 是否打开缩放条
+    slider_value: u8,                  // 用于缩放条的值
+    resampling_type: ResamplingType,   // 当前选择的缩放算法
     original: Option<image::RgbImage>, // 用于存储原始图片
-    scaled_bytes: Vec<u8>, // 用于存储缩放后的图片字节
+    scaled_bytes: Vec<u8>,             // 用于存储缩放后的图片字节
     thumbnail_cache: std::collections::HashMap<PathBuf, Handle>, // 缓存缩略图
-    is_dragging: bool, // 是否正在拖动滑块
+    is_dragging: bool,                 // 是否正在拖动滑块
     last_resize_time: std::time::Instant, // 上次缩放的时间
-    preview_scaled_bytes: Vec<u8>, // 用于存储预览缩放后的图片字节
-    final_scaled_bytes: Vec<u8>, // 用于存储最终高质量缩放后的图片字节
+    preview_scaled_bytes: Vec<u8>,     // 用于存储预览缩放后的图片字节
+    final_scaled_bytes: Vec<u8>,       // 用于存储最终高质量缩放后的图片字节
     is_resampling_mode: bool,
-    hand_tool_active: bool, // 是否启用手型工具
-    is_panning: bool, // 是否正在拖动画布
+    hand_tool_active: bool,                  // 是否启用手型工具
+    is_panning: bool,                        // 是否正在拖动画布
     pan_start_position: Option<iced::Point>, // 拖动开始位置
-    pan_offset: iced::Vector, // 拖动偏移量
+    pan_offset: iced::Vector,                // 拖动偏移量
 }
 
 const COLLECTION_LIMIT: usize = 8;
@@ -106,20 +106,19 @@ enum Message {
     PickPreviousImage,
     OpenResamplingBar,
     SliderChanged(u8),
-    SliderReleased, // 新增：滑块释放事件
+    SliderReleased,                        // 新增：滑块释放事件
     ResamplingTypeChanged(ResamplingType), // 新增：缩放算法改变
-    ImageResized(Vec<u8>, bool), // 用于接收缩放后的图片字节，bool表示是否是高质量渲染
-    LoadImage(PathBuf), // 用于加载图片
-    LoadThumbnail(PathBuf), // 用于加载缩略图
-    ThumbnailLoaded(PathBuf, Handle), // 缩略图加载完成
-    LoadScaledBytes, // 用于加载缩放后的图片字节
-    FinalizeDragging, // 新增：完成拖动，执行高质量渲染
-    ToggleHandTool, // 切换手型工具
-    MousePressed(iced::mouse::Event), // 鼠标按下事件
-    MouseReleased(iced::mouse::Event), // 鼠标释放事件
-    MouseMoved(iced::Point), // 鼠标移动事件
+    ImageResized(Vec<u8>, bool),           // 用于接收缩放后的图片字节，bool表示是否是高质量渲染
+    LoadImage(PathBuf),                    // 用于加载图片
+    LoadThumbnail(PathBuf),                // 用于加载缩略图
+    ThumbnailLoaded(PathBuf, Handle),      // 缩略图加载完成
+    LoadScaledBytes,                       // 用于加载缩放后的图片字节
+    FinalizeDragging,                      // 新增：完成拖动，执行高质量渲染
+    ToggleHandTool,                        // 切换手型工具
+    MousePressed(iced::mouse::Event),      // 鼠标按下事件
+    MouseReleased(iced::mouse::Event),     // 鼠标释放事件
+    MouseMoved(iced::Point),               // 鼠标移动事件
 }
-
 
 #[derive(Debug, Clone)]
 enum FileTreeEntry {
@@ -144,7 +143,7 @@ impl FileTreeEntry {
                 path,
                 children: Vec::new(),
                 expanded: false,
-                children_loaded: false, 
+                children_loaded: false,
             }
         } else {
             FileTreeEntry::File {
@@ -184,36 +183,48 @@ impl Default for State {
 
 impl State {
     fn new() -> Self {
-        let home_dir = if let Some(dir) = dirs::home_dir() { dir } else { PathBuf::from("/") };
-        let mut state = State { 
-            current_path: home_dir.clone(), 
-            current_image: None, 
-            root_file_tree_entry: Some(FileTreeEntry::Directory { 
-                name: home_dir.clone().file_name().unwrap_or_default().to_string_lossy().into_owned(), 
-                path: home_dir.clone(), 
-                children: vec![], 
-                expanded: true, 
+        let home_dir = if let Some(dir) = dirs::home_dir() {
+            dir
+        } else {
+            PathBuf::from("/")
+        };
+        let mut state = State {
+            current_path: home_dir.clone(),
+            current_image: None,
+            root_file_tree_entry: Some(FileTreeEntry::Directory {
+                name: home_dir
+                    .clone()
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                path: home_dir.clone(),
+                children: vec![],
+                expanded: true,
                 children_loaded: false, // 初始状态未加载子节点
             }),
             image_collection: Vec::new(), // 初始化图片库为空
-            current_image_index: 0, // 初始图片索引为 0
+            current_image_index: 0,       // 初始图片索引为 0
             resampling_bar_opened: false,
-            slider_value: 50, // 初始缩放条值为 50
-            resampling_type: ResamplingType::Lanczos3, // 默认使用Lanczos3算法
-            original: None, // 用于存储原始图片
-            scaled_bytes: Vec::new(), // 用于存储缩放后的图片字节
+            slider_value: 50,                                  // 初始缩放条值为 50
+            resampling_type: ResamplingType::Lanczos3,         // 默认使用Lanczos3算法
+            original: None,                                    // 用于存储原始图片
+            scaled_bytes: Vec::new(),                          // 用于存储缩放后的图片字节
             thumbnail_cache: std::collections::HashMap::new(), // 初始化缩略图缓存
-            is_dragging: false, // 初始状态不是拖动
-            last_resize_time: std::time::Instant::now(), // 初始化时间
-            preview_scaled_bytes: Vec::new(), // 初始化预览缩放字节
-            final_scaled_bytes: Vec::new(), // 初始化最终缩放字节
-            is_resampling_mode: false, // 初始状态不是缩放模式
-            hand_tool_active: false, // 初始状态未启用手型工具
-            is_panning: false, // 初始状态未拖动画布
-            pan_start_position: None, // 初始拖动开始位置
-            pan_offset: iced::Vector::new(0.0, 0.0), // 初始拖动偏移量
+            is_dragging: false,                                // 初始状态不是拖动
+            last_resize_time: std::time::Instant::now(),       // 初始化时间
+            preview_scaled_bytes: Vec::new(),                  // 初始化预览缩放字节
+            final_scaled_bytes: Vec::new(),                    // 初始化最终缩放字节
+            is_resampling_mode: false,                         // 初始状态不是缩放模式
+            hand_tool_active: false,                           // 初始状态未启用手型工具
+            is_panning: false,                                 // 初始状态未拖动画布
+            pan_start_position: None,                          // 初始拖动开始位置
+            pan_offset: iced::Vector::new(0.0, 0.0),           // 初始拖动偏移量
         };
-        load_directory_children(state.root_file_tree_entry.as_mut().unwrap(), home_dir.clone());
+        load_directory_children(
+            state.root_file_tree_entry.as_mut().unwrap(),
+            home_dir.clone(),
+        );
         state
     }
 
@@ -230,10 +241,8 @@ impl State {
                 self.current_image_index = 0; // 重置图片索引
                 let path = self.current_image.clone();
                 Task::perform(
-                    async move {
-                        Message::LoadImage(path.unwrap_or_default())  
-                    },
-                    |msg| msg,  
+                    async move { Message::LoadImage(path.unwrap_or_default()) },
+                    |msg| msg,
                 )
             }
             Message::ChangeDirectory(path) => {
@@ -244,9 +253,7 @@ impl State {
                 }
                 Task::none()
             }
-            Message::NoOp => {
-                Task::none()
-            }
+            Message::NoOp => Task::none(),
             Message::ExpandDirectory(path) => {
                 // 通过 Option 链式调用，把路径一路 map 成是否需要加载
                 let needs_load = self
@@ -290,20 +297,23 @@ impl State {
                         if child_path.is_file() {
                             let ext = child_path.extension().map(|ext| ext.to_str());
                             let ext = ext.and_then(|s| s).unwrap_or_default().to_lowercase();
-                            if ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" || ext == "svg" {
+                            if ext == "png"
+                                || ext == "jpg"
+                                || ext == "jpeg"
+                                || ext == "gif"
+                                || ext == "svg"
+                            {
                                 self.image_collection.push(child_path);
                             }
                         }
                     }
-                    
+
                     // 为每个图片异步加载缩略图
                     for path in &self.image_collection {
                         if !self.thumbnail_cache.contains_key(path) {
                             let path_clone = path.clone();
                             return Task::perform(
-                                async move {
-                                    Message::LoadThumbnail(path_clone)
-                                },
+                                async move { Message::LoadThumbnail(path_clone) },
                                 |msg| msg,
                             );
                         }
@@ -314,29 +324,29 @@ impl State {
             Message::PickImage(path) => {
                 self.current_path = path.clone();
                 self.current_image = Some(path.clone());
-                self.current_image_index = self.image_collection.iter().position(|p| p == &path.clone()).unwrap_or(0);
+                self.current_image_index = self
+                    .image_collection
+                    .iter()
+                    .position(|p| p == &path.clone())
+                    .unwrap_or(0);
                 let path = self.current_image.clone();
                 Task::perform(
-                    async move {
-                        Message::LoadImage(path.unwrap_or_default())  
-                    },
-                    |msg| msg,  
+                    async move { Message::LoadImage(path.unwrap_or_default()) },
+                    |msg| msg,
                 )
             }
-            Message::SelectFolder(path) => {
-                Task::none()
-            }
+            Message::SelectFolder(path) => Task::none(),
             Message::PickNextImage => {
                 if !self.image_collection.is_empty() {
-                    self.current_image_index = (self.current_image_index + 1) % self.image_collection.len();
-                    self.current_image = Some(self.image_collection[self.current_image_index].clone());
+                    self.current_image_index =
+                        (self.current_image_index + 1) % self.image_collection.len();
+                    self.current_image =
+                        Some(self.image_collection[self.current_image_index].clone());
                 }
                 let path = self.current_image.clone();
                 Task::perform(
-                    async move {
-                        Message::LoadImage(path.unwrap_or_default())  
-                    },
-                    |msg| msg,  
+                    async move { Message::LoadImage(path.unwrap_or_default()) },
+                    |msg| msg,
                 )
             }
             Message::PickPreviousImage => {
@@ -346,14 +356,13 @@ impl State {
                     } else {
                         self.current_image_index -= 1;
                     }
-                    self.current_image = Some(self.image_collection[self.current_image_index].clone());
+                    self.current_image =
+                        Some(self.image_collection[self.current_image_index].clone());
                 }
                 let path = self.current_image.clone();
                 Task::perform(
-                    async move {
-                        Message::LoadImage(path.unwrap_or_default())  
-                    },
-                    |msg| msg,  
+                    async move { Message::LoadImage(path.unwrap_or_default()) },
+                    |msg| msg,
                 )
             }
             Message::OpenResamplingBar => {
@@ -368,17 +377,17 @@ impl State {
                 // 节流：检查距离上次缩放的时间是否超过阈值（500ms）
                 let now = std::time::Instant::now();
                 let elapsed = now.duration_since(self.last_resize_time);
-                
-                if elapsed.as_millis() < 800 {
+
+                if elapsed.as_millis() < 500 {
                     // 如果时间间隔太短，不执行缩放，等待下一次滑块变化
                     return Task::none();
                 }
-                
+
                 self.last_resize_time = now;
-                
+
                 // 克隆所需数据，转到后台线程
                 let img = self.original.clone();
-                
+
                 // 在拖动过程中使用Point算法（最快的算法）进行快速预览
                 Task::perform(
                     async move {
@@ -389,38 +398,40 @@ impl State {
                     |msg| msg,
                 )
             }
-            
+
             Message::SliderReleased => {
                 // 滑块释放时，安排一个延迟任务来执行高质量渲染
                 // 不立即设置is_dragging = false，让FinalizeDragging来处理
-                
+
                 // 创建一个延迟任务，800ms后触发FinalizeDragging
                 Task::perform(
                     async {
                         // 等待800ms，确保用户真的停止了拖动
-                        sleep(std::time::Duration::from_millis(800));
+                        sleep(std::time::Duration::from_millis(500));
                         Message::FinalizeDragging
                     },
                     |msg| msg,
                 )
             }
-            
+
             Message::FinalizeDragging => {
                 if !self.is_dragging {
                     return Task::none(); // 如果已经不在拖动状态，不执行操作
                 }
-                
+
                 // 打印日志，显示从拖动结束到执行高质量渲染的时间
-                println!("执行高质量渲染，距离上次操作: {:?}", 
-                         std::time::Instant::now().duration_since(self.last_resize_time));
-                
+                println!(
+                    "执行高质量渲染，距离上次操作: {:?}",
+                    std::time::Instant::now().duration_since(self.last_resize_time)
+                );
+
                 self.is_dragging = false;
-                
+
                 // 使用高质量算法进行最终渲染
                 let img = self.original.clone();
                 let value = self.slider_value;
                 let scale_type = self.resampling_type;
-                
+
                 Task::perform(
                     async move {
                         let scaled = scale_image_async(img, value, scale_type);
@@ -431,7 +442,7 @@ impl State {
             }
             Message::ResamplingTypeChanged(scale_type) => {
                 self.resampling_type = scale_type;
-                
+
                 // 如果有原始图片，立即应用新算法重新缩放
                 if self.original.is_some() {
                     let img = self.original.clone();
@@ -460,7 +471,11 @@ impl State {
             }
             Message::LoadScaledBytes => {
                 if !self.scaled_bytes.is_empty() {
-                    let scaled = scale_image_async(self.original.clone(), self.slider_value, self.resampling_type);
+                    let scaled = scale_image_async(
+                        self.original.clone(),
+                        self.slider_value,
+                        self.resampling_type,
+                    );
                     self.scaled_bytes = scaled;
                 }
                 Task::none()
@@ -472,20 +487,18 @@ impl State {
                 self.is_resampling_mode = false; // 重置缩放模式
                 self.preview_scaled_bytes.clear(); // 清空预览缓存
                 self.final_scaled_bytes.clear(); // 清空最终缓存
-                
+                self.pan_offset = iced::Vector::new(0.0, 0.0); // 重置拖动偏移量
+                self.is_panning = false; // 重置拖动状态
+                self.pan_start_position = None; // 重置拖动开始位置
+
                 if let Ok(img) = image::open(&path) {
                     let rgb_img = img.to_rgb8();
                     self.original = Some(rgb_img.clone());
-                    
-                    Task::perform(
-                        async move {
-                            Message::LoadScaledBytes
-                        },
-                        |msg| msg,
-                    )
+
+                    Task::perform(async move { Message::LoadScaledBytes }, |msg| msg)
                 } else {
                     eprintln!("Failed to load image: {}", path.display());
-                    Task::none() 
+                    Task::none()
                 }
             }
             Message::LoadThumbnail(path) => {
@@ -503,20 +516,18 @@ impl State {
             Message::ThumbnailLoaded(path, handle) => {
                 // 缩略图加载完成，保存到缓存
                 self.thumbnail_cache.insert(path.clone(), handle);
-                
+
                 // 检查是否还有其他缩略图需要加载
                 for path in &self.image_collection {
                     if !self.thumbnail_cache.contains_key(path) {
                         let path_clone = path.clone();
                         return Task::perform(
-                            async move {
-                                Message::LoadThumbnail(path_clone)
-                            },
+                            async move { Message::LoadThumbnail(path_clone) },
                             |msg| msg,
                         );
                     }
                 }
-                
+
                 Task::none()
             }
             Message::ToggleHandTool => {
@@ -527,9 +538,7 @@ impl State {
                 if self.hand_tool_active {
                     if let iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left) = event {
                         self.is_panning = true;
-                        // 注意：这里需要获取鼠标位置，但目前的事件结构可能不包含位置信息
-                        // 我们需要在MouseMoved事件中处理位置
-                        
+                        self.pan_start_position = None; // 重置开始位置，等待第一个MouseMoved事件
                     }
                 }
                 Task::none()
@@ -539,6 +548,15 @@ impl State {
                     if let iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left) = event {
                         self.is_panning = false;
                         self.pan_start_position = None;
+
+                        // 拖动结束后，使用高质量算法重新渲染
+                        if let Some(ref ori) = self.original {
+                            let scale = self.slider_value as f32 / 50.0;
+                            let final_image =
+                                crop_and_scale(ori, scale, self.pan_offset, self.resampling_type);
+                            self.scaled_bytes = final_image.clone();
+                            self.final_scaled_bytes = final_image;
+                        }
                     }
                 }
                 Task::none()
@@ -548,6 +566,7 @@ impl State {
                     if let Some(last) = self.pan_start_position {
                         let delta = Vector::new(position.x - last.x, position.y - last.y);
                         self.pan_offset = self.pan_offset + delta;
+                        self.pan_start_position = Some(position);
 
                         // 重新裁剪+缩放
                         if let Some(ref ori) = self.original {
@@ -556,13 +575,14 @@ impl State {
                                 ori,
                                 scale,
                                 self.pan_offset,
-                                self.resampling_type, // 拖动时用低质量算法
+                                ResamplingType::Point, // 拖动时用最快的算法
                             );
                             self.scaled_bytes = preview.clone();
                             self.preview_scaled_bytes = preview.clone();
                         }
+                    } else {
+                        self.pan_start_position = Some(position);
                     }
-                    self.pan_start_position = Some(position);
                 }
                 Task::none()
             }
@@ -628,14 +648,10 @@ impl State {
         } else {
             column![].into()
         };
-        
-        let file_tree = container(
-            scrollable(
-                column![file_tree_content]
-                    .spacing(5)
-                    .width(Length::Fill)
-            )
-        )
+
+        let file_tree = container(scrollable(
+            column![file_tree_content].spacing(5).width(Length::Fill),
+        ))
         .width(Length::FillPortion(1))
         .padding(10)
         .style(|_theme: &Theme| container::Style {
@@ -644,14 +660,12 @@ impl State {
         });
 
         let main_image_display: iced::Element<_> = {
-            let handle = if self.is_resampling_mode && !self.scaled_bytes.is_empty() {
-                if self.hand_tool_active {
-                    println!("handle {} {}", self.hand_tool_active, self.scaled_bytes.len());
-                    iced::widget::image::Handle::from_bytes(self.scaled_bytes.clone());
-                }
+            let handle = if (self.is_resampling_mode || self.hand_tool_active)
+                && !self.scaled_bytes.is_empty()
+            {
                 // 使用当前的缩放图像（可能是预览质量或高质量）
-                if self.is_dragging {
-                    // 如果正在拖动，使用预览缩放后的图片
+                if self.is_dragging || self.is_panning {
+                    // 如果正在拖动滑块或拖动图片，使用预览缩放后的图片
                     iced::widget::image::Handle::from_bytes(self.preview_scaled_bytes.clone())
                 } else {
                     // 如果不是拖动状态，使用最终高质量缩放后的图片
@@ -674,39 +688,37 @@ impl State {
                 .width(Length::Fill)
                 .height(Length::Fill);
 
-             // 用 Container 的 padding 实现平移
+            // 用 Container 的 padding 实现平移
             let positioned: Element<_> = container(img)
                 // .padding(iced::Padding::from([translate_y, translate_x]))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into();
-                
-        
+
             // 只在打开时显示滑块和算法选择
             let slider_layer = if self.resampling_bar_opened {
-                
                 // 手动添加每个按钮，避免使用extend和map
-                let buttons = ResamplingType::all().iter().map(|&resampling_type| {
-                    let is_selected = resampling_type == self.resampling_type;
-                    let btn: Element<_> = button(
-                        text(resampling_type.name())
-                            .size(12)
-                    )
-                    .padding(4)
-                    .style(move |theme, status| {
-                        if is_selected {
-                            button_style::primary(theme, status) // 选中的算法使用主要样式
-                        } else {
-                            button_style::default(theme, status) // 未选中的算法使用默认样式
-                        }
+                let buttons = ResamplingType::all()
+                    .iter()
+                    .map(|&resampling_type| {
+                        let is_selected = resampling_type == self.resampling_type;
+                        let btn: Element<_> = button(text(resampling_type.name()).size(12))
+                            .padding(4)
+                            .style(move |theme, status| {
+                                if is_selected {
+                                    button_style::primary(theme, status) // 选中的算法使用主要样式
+                                } else {
+                                    button_style::default(theme, status) // 未选中的算法使用默认样式
+                                }
+                            })
+                            .on_press(Message::ResamplingTypeChanged(resampling_type))
+                            .into(); // 将Button转换为Element
+                        btn
                     })
-                    .on_press(Message::ResamplingTypeChanged(resampling_type))
-                    .into(); // 将Button转换为Element
-                    btn
-                }).collect::<Vec<_>>();
-                
+                    .collect::<Vec<_>>();
+
                 let algorithm_buttons = row(buttons).spacing(5).padding(5);
-                
+
                 // 组合滑块和算法选择
                 container(
                     column![
@@ -716,28 +728,32 @@ impl State {
                             .on_release(Message::SliderReleased),
                         algorithm_buttons
                     ]
-                    .spacing(5)
+                    .spacing(5),
                 )
                 .width(250)
                 .padding(8)
-                .center_x(250)          // 水平居中
+                .center_x(250) // 水平居中
                 .align_y(iced::alignment::Vertical::Top) // 贴顶部
                 .into()
             } else {
                 iced::Element::new(iced::widget::Space::new(0, 0))
             };
-        
+
             // 如果启用了手型工具，包装图片在MouseArea中以捕获鼠标事件
             let image_with_mouse_events: Element<_> = if self.hand_tool_active {
                 iced::widget::mouse_area(positioned)
-                    .on_press(Message::MousePressed(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)))
-                    .on_release(Message::MouseReleased(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)))
+                    .on_press(Message::MousePressed(iced::mouse::Event::ButtonPressed(
+                        iced::mouse::Button::Left,
+                    )))
+                    .on_release(Message::MouseReleased(iced::mouse::Event::ButtonReleased(
+                        iced::mouse::Button::Left,
+                    )))
                     .on_move(Message::MouseMoved)
                     .into()
             } else {
                 positioned
             };
-        
+
             Stack::new()
                 .push(image_with_mouse_events) // 底层：带鼠标事件的图片
                 .push(slider_layer) // 顶层：滑块
@@ -755,7 +771,7 @@ impl State {
             .extend(images.into_iter().enumerate().map(|(idx, p)| {
                 // 是否当前选中的那一张
                 let is_selected = idx == self.current_image_index;
-                
+
                 // 使用缓存的缩略图或默认占位符
                 let image_handle = if let Some(handle) = self.thumbnail_cache.get(&p) {
                     handle.clone()
@@ -763,7 +779,7 @@ impl State {
                     // 如果缓存中没有，使用占位符并触发加载
                     Handle::from_rgba(1, 1, vec![255, 255, 255, 255])
                 };
-                
+
                 container(
                     button(
                         iced::widget::image(image_handle)
@@ -780,13 +796,13 @@ impl State {
                             button_style::transparent(theme, status) // 普通透明
                         }
                     })
-                    .on_press(Message::PickImage(p))
+                    .on_press(Message::PickImage(p)),
                 )
                 .width(Length::Fixed(84.0)) // 固定宽度 = 图片宽度(80) + padding(2*2)
                 .height(Length::Fixed(84.0)) // 固定高度 = 图片高度(80) + padding(2*2)
                 .into()
             }));
-            
+
         // 将行包装在水平滚动容器中
         let collection_display = scrollable(thumbnails_row)
             .direction(Direction::Horizontal(scrollable::Scrollbar::new()));
@@ -796,12 +812,12 @@ impl State {
             column![
                 main_image_display,
                 container(collection_display)
-                .height(Length::Fixed(100.0)) // 缩略图区域高度
-                .width(Length::Fill)
-                .style(|_theme| container::Style {
-                    background: Some(Background::Color(Color::from_rgb8(240, 240, 240))),
-                    ..Default::default()
-                }),
+                    .height(Length::Fixed(100.0)) // 缩略图区域高度
+                    .width(Length::Fill)
+                    .style(|_theme| container::Style {
+                        background: Some(Background::Color(Color::from_rgb8(240, 240, 240))),
+                        ..Default::default()
+                    }),
             ]
             .width(Length::FillPortion(4)) // This column takes the remaining space
             .height(Length::Fill) // Fill remaining height
@@ -822,16 +838,18 @@ impl State {
             FileTreeEntry::Directory { path, name, .. } => {
                 let icon = "📁"; // Folder icon
                 let text_str = format!("{} {}", icon, name);
-                (text_str,
-                 Message::ExpandDirectory(path.clone()), // On press, toggle expansion
-                 ) 
-            },
+                (
+                    text_str,
+                    Message::ExpandDirectory(path.clone()), // On press, toggle expansion
+                )
+            }
             FileTreeEntry::File { path, name } => {
                 let image_icon = "📷"; // Image icon
                 let text_str = format!("{} {}", image_icon, name);
-                (text_str,
-                 Message::PickImage(path.clone()), // On press, select image
-                 )
+                (
+                    text_str,
+                    Message::PickImage(path.clone()), // On press, select image
+                )
             }
         };
 
@@ -846,7 +864,10 @@ impl State {
         ];
 
         // 如果是展开的目录，并且子节点已加载，则递归渲染子节点
-        if let FileTreeEntry::Directory { expanded, children, .. } = entry {
+        if let FileTreeEntry::Directory {
+            expanded, children, ..
+        } = entry
+        {
             //println!("Rendering directory: {} (expanded: {})", entry.name(), expanded);
             if *expanded {
                 for child_entry in children.iter() {
@@ -857,11 +878,13 @@ impl State {
 
         item_column.into()
     }
-
-    
 }
 
-fn scale_image_async(ori_img: Option<image::RgbImage>, slider_value: u8, resampling_type: ResamplingType) -> Vec<u8> {
+fn scale_image_async(
+    ori_img: Option<image::RgbImage>,
+    slider_value: u8,
+    resampling_type: ResamplingType,
+) -> Vec<u8> {
     if let Some(img) = &ori_img {
         let (w0, h0) = img.dimensions();
         println!("Image dimensions: {}x{}", w0, h0);
@@ -894,17 +917,10 @@ fn scale_image_async(ori_img: Option<image::RgbImage>, slider_value: u8, resampl
         )
         .unwrap();
 
-        resizer.resize(
-            cropped.as_raw().as_rgb(),
-            dst.as_rgb_mut(),
-        );
+        let _ = resizer.resize(cropped.as_raw().as_rgb(), dst.as_rgb_mut());
 
-        let scaled = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(
-            display_width,
-            display_height,
-            dst,
-        )
-        .unwrap();
+        let scaled =
+            ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(display_width, display_height, dst).unwrap();
 
         let mut buf = Vec::new();
         scaled
@@ -918,30 +934,34 @@ fn scale_image_async(ori_img: Option<image::RgbImage>, slider_value: u8, resampl
 /// 根据当前缩放倍数 + 平移偏移量，从原图裁一块并放大到显示尺寸
 fn crop_and_scale(
     ori: &image::RgbImage,
-    scale: f32,          // slider_value / 50.0
-    offset: Vector,      // 用户拖动的像素偏移（相对于显示窗口）
+    scale: f32,     // slider_value / 50.0
+    offset: Vector, // 用户拖动的像素偏移（相对于显示窗口）
     resample: ResamplingType,
 ) -> Vec<u8> {
     let (full_w, full_h) = ori.dimensions();
 
-    // 1. 计算“窗口”在放大后图片上的逻辑大小
-    let view_w = (full_w as f32 / scale).max(1.0);   // 逻辑宽
-    let view_h = (full_h as f32 / scale).max(1.0);   // 逻辑高
+    // 1. 计算"窗口"在放大后图片上的逻辑大小
+    let view_w = (full_w as f32 / scale).max(1.0); // 逻辑宽
+    let view_h = (full_h as f32 / scale).max(1.0); // 逻辑高
 
     // 2. 计算裁剪起点（左上角）
     let center_x = full_w as f32 / 2.0;
     let center_y = full_h as f32 / 2.0;
 
-    // 鼠标拖动的 1 个像素对应原图 1 个像素（放大后需再除以 scale）
-    let crop_x = (center_x - view_w / 2.0 - offset.x / scale).max(0.0) as u32;
-    let crop_y = (center_y - view_h / 2.0 - offset.y / scale).max(0.0) as u32;
+    // 修正偏移量计算：拖动方向与裁剪方向相反，且需要根据缩放比例调整
+    let crop_x = (center_x - view_w / 2.0 + offset.x / scale)
+        .max(0.0)
+        .min(full_w as f32 - view_w) as u32;
+    let crop_y = (center_y - view_h / 2.0 + offset.y / scale)
+        .max(0.0)
+        .min(full_h as f32 - view_h) as u32;
 
     let crop_w = view_w.min(full_w as f32 - crop_x as f32) as u32;
     let crop_h = view_h.min(full_h as f32 - crop_y as f32) as u32;
 
     // 3. 裁剪
     let cropped = ori.view(crop_x, crop_y, crop_w, crop_h).to_image();
-    println!("moved: {} {} {} {} {}", crop_x, crop_y, crop_w, crop_h, cropped.len());
+
     // 4. 放大回显示尺寸
     let mut dst = vec![0; (full_w * full_h * 3) as usize];
     let mut resizer = resize::new(
@@ -953,10 +973,7 @@ fn crop_and_scale(
         resample.to_resize_type(),
     )
     .unwrap();
-    resizer.resize(
-        cropped.as_raw().as_rgb(),
-        dst.as_rgb_mut(),
-    );
+    let _ = resizer.resize(cropped.as_raw().as_rgb(), dst.as_rgb_mut());
 
     let out = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(full_w, full_h, dst).unwrap();
     let mut buf = Vec::new();
@@ -965,7 +982,10 @@ fn crop_and_scale(
     buf
 }
 
-fn find_entry_by_path<'a>(entry: &'a mut FileTreeEntry, path: &PathBuf) -> Option<&'a mut FileTreeEntry> {
+fn find_entry_by_path<'a>(
+    entry: &'a mut FileTreeEntry,
+    path: &PathBuf,
+) -> Option<&'a mut FileTreeEntry> {
     if entry.path() == path {
         return Some(entry);
     }
@@ -981,19 +1001,16 @@ fn find_entry_by_path<'a>(entry: &'a mut FileTreeEntry, path: &PathBuf) -> Optio
     None
 }
 
-fn load_directory_children(
-    root_entry: &mut FileTreeEntry, 
-    target_path: PathBuf
-) {
+fn load_directory_children(root_entry: &mut FileTreeEntry, target_path: PathBuf) {
     if let Some(target_entry) = find_entry_by_path(root_entry, &target_path) {
         if let FileTreeEntry::Directory { children, .. } = target_entry {
             children.clear();
-            
+
             if let Ok(entries) = fs::read_dir(&target_path) {
                 for entry in entries.flatten() {
                     let child_path = entry.path();
                     let child_entry = FileTreeEntry::default(child_path);
-                    
+
                     let image_formats = [".png", ".jpg", ".jpeg", ".gif", ".svg"];
                     if !child_entry.is_directory() {
                         let mut image_flag = false;
@@ -1008,14 +1025,13 @@ fn load_directory_children(
                     } else if child_entry.name().starts_with('.') {
                         continue;
                     }
-                    
+
                     children.push(child_entry);
                 }
             }
         }
     }
 }
-
 
 fn main() -> iced::Result {
     println!("Hello, world!");
