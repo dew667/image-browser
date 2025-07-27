@@ -1,28 +1,23 @@
 use std::fs;
-use std::path::{self, PathBuf};
-use std::process::Command;
-
-use iced::futures::future;
-use iced::widget::container::{background, transparent};
+use std::path::{PathBuf};
 use iced::widget::image::Handle;
 use iced::widget::scrollable::Direction;
-use iced::widget::{Container, Image, Stack, button, slider};
-use iced::window::icon;
-use iced::{Background, Color, Error, Task, Vector};
+use iced::widget::{Stack, button, slider};
+use iced::{Background, Color, Task, Vector};
 use iced::{
     Element, Length, Theme,
     alignment::Horizontal,
     color,
-    widget::{Column, Row, column, container, row, scrollable, text},
+    widget::{column, container, row, scrollable, text},
 };
-use image::{GenericImageView, ImageBuffer, Pixel, Rgb, Rgba};
-use resize::Pixel::RGB8;
+use image::{GenericImageView, ImageBuffer, Rgb,};
 use resize::Type::{Catrom, Lanczos3, Mitchell, Point, Triangle};
 use rfd::FileDialog;
 use rgb::FromSlice;
 use std::thread::sleep;
 
 mod button_style;
+mod smart_directory;
 
 // 定义缩放算法类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -418,12 +413,6 @@ impl State {
                 if !self.is_dragging {
                     return Task::none(); // 如果已经不在拖动状态，不执行操作
                 }
-
-                // 打印日志，显示从拖动结束到执行高质量渲染的时间
-                println!(
-                    "执行高质量渲染，距离上次操作: {:?}",
-                    std::time::Instant::now().duration_since(self.last_resize_time)
-                );
 
                 self.is_dragging = false;
 
@@ -887,7 +876,6 @@ fn scale_image_async(
 ) -> Vec<u8> {
     if let Some(img) = &ori_img {
         let (w0, h0) = img.dimensions();
-        println!("Image dimensions: {}x{}", w0, h0);
         // 缩放倍率：1.0 = 原始大小，2.0 = 放大两倍
         let scale = slider_value as f32 / 50.0;
 
@@ -949,10 +937,10 @@ fn crop_and_scale(
     let center_y = full_h as f32 / 2.0;
 
     // 修正偏移量计算：拖动方向与裁剪方向相反，且需要根据缩放比例调整
-    let crop_x = (center_x - view_w / 2.0 + offset.x / scale)
+    let crop_x = (center_x - view_w / 2.0 - offset.x / scale)
         .max(0.0)
         .min(full_w as f32 - view_w) as u32;
-    let crop_y = (center_y - view_h / 2.0 + offset.y / scale)
+    let crop_y = (center_y - view_h / 2.0 - offset.y / scale)
         .max(0.0)
         .min(full_h as f32 - view_h) as u32;
 
@@ -1034,6 +1022,5 @@ fn load_directory_children(root_entry: &mut FileTreeEntry, target_path: PathBuf)
 }
 
 fn main() -> iced::Result {
-    println!("Hello, world!");
     iced::run("Image Browser", State::update, State::view)
 }

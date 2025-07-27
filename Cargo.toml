@@ -11,3 +11,4 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 resize = "0.8.8"
 bytemuck = { version = "1.16", features = ["derive"] }
 rgb = "0.8.52"
+chrono = "0.4.41"
