@@ -1,23 +1,27 @@
-use std::fs;
-use std::path::{PathBuf};
 use iced::widget::image::Handle;
 use iced::widget::scrollable::Direction;
 use iced::widget::{Stack, button, slider};
-use iced::{Background, Color, Task, Vector};
+use iced::{Background, Color, Subscription, Task, Vector, keyboard};
 use iced::{
     Element, Length, Theme,
     alignment::Horizontal,
     color,
     widget::{column, container, row, scrollable, text},
 };
-use image::{GenericImageView, ImageBuffer, Rgb,};
+use image::{GenericImageView, ImageBuffer, Rgb};
 use resize::Type::{Catrom, Lanczos3, Mitchell, Point, Triangle};
 use rfd::FileDialog;
 use rgb::FromSlice;
+use std::fs;
+use std::path::PathBuf;
 use std::thread::sleep;
 
 mod button_style;
 mod smart_directory;
+
+use smart_directory::RecentManager;
+
+use crate::smart_directory::RecentItem;
 
 // 定义缩放算法类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,8 +37,8 @@ impl ResamplingType {
     // 获取算法名称
     fn name(&self) -> &'static str {
         match self {
-            ResamplingType::Point => "最近点",
-            ResamplingType::Triangle => "三角形",
+            ResamplingType::Point => "Point",
+            ResamplingType::Triangle => "Triangle",
             ResamplingType::Catrom => "Catrom",
             ResamplingType::Mitchell => "Mitchell",
             ResamplingType::Lanczos3 => "Lanczos3",
@@ -67,7 +71,7 @@ impl ResamplingType {
 struct State {
     current_path: PathBuf,
     current_image: Option<PathBuf>,
-    root_file_tree_entry: Option<FileTreeEntry>,
+    root_file_tree_entry: Vec<FileTreeEntry>,
     image_collection: Vec<PathBuf>, // 用于存储图片库
     current_image_index: usize,
     resampling_bar_opened: bool,       // 是否打开缩放条
@@ -85,6 +89,8 @@ struct State {
     is_panning: bool,                        // 是否正在拖动画布
     pan_start_position: Option<iced::Point>, // 拖动开始位置
     pan_offset: iced::Vector,                // 拖动偏移量
+    recent_manager: RecentManager,
+    is_fullscreen: bool,
 }
 
 const COLLECTION_LIMIT: usize = 8;
@@ -113,6 +119,8 @@ enum Message {
     MousePressed(iced::mouse::Event),      // 鼠标按下事件
     MouseReleased(iced::mouse::Event),     // 鼠标释放事件
     MouseMoved(iced::Point),               // 鼠标移动事件
+    ToggleFullscreen,                      // 切换全屏模式
+    EscPressed,                            // ESC按键事件
 }
 
 #[derive(Debug, Clone)]
@@ -183,21 +191,48 @@ impl State {
         } else {
             PathBuf::from("/")
         };
+        let rencents = if let Some(dir) = dirs::data_dir() {
+            if dir.join("recent.json").exists() {
+                RecentManager::load_from_file(dir.join("recent.json"))
+                    .unwrap_or(RecentManager::new(20))
+            } else {
+                RecentManager::new(20)
+            }
+        } else {
+            RecentManager::new(20)
+        };
+        let recent_items: Vec<RecentItem> = Vec::from(rencents.get_recent_items());
         let mut state = State {
             current_path: home_dir.clone(),
             current_image: None,
-            root_file_tree_entry: Some(FileTreeEntry::Directory {
-                name: home_dir
-                    .clone()
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-                path: home_dir.clone(),
-                children: vec![],
-                expanded: true,
-                children_loaded: false, // 初始状态未加载子节点
-            }),
+            root_file_tree_entry: vec![
+                FileTreeEntry::Directory {
+                    name: "Recents".to_string(),
+                    path: PathBuf::from("__RECENTS__"),
+                    children: recent_items
+                        .clone()
+                        .iter()
+                        .map(|item| FileTreeEntry::File {
+                            name: item.name(),
+                            path: item.path().clone(),
+                        })
+                        .collect(),
+                    expanded: false,
+                    children_loaded: false,
+                },
+                FileTreeEntry::Directory {
+                    name: home_dir
+                        .clone()
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    path: home_dir.clone(),
+                    children: vec![],
+                    expanded: false,
+                    children_loaded: false, // 初始状态未加载子节点
+                },
+            ],
             image_collection: Vec::new(), // 初始化图片库为空
             current_image_index: 0,       // 初始图片索引为 0
             resampling_bar_opened: false,
@@ -215,11 +250,10 @@ impl State {
             is_panning: false,                                 // 初始状态未拖动画布
             pan_start_position: None,                          // 初始拖动开始位置
             pan_offset: iced::Vector::new(0.0, 0.0),           // 初始拖动偏移量
+            recent_manager: rencents,
+            is_fullscreen: false, // 初始状态不是全屏模式
         };
-        load_directory_children(
-            state.root_file_tree_entry.as_mut().unwrap(),
-            home_dir.clone(),
-        );
+        load_directory_children(&mut state.root_file_tree_entry[1], home_dir.clone());
         state
     }
 
@@ -250,42 +284,61 @@ impl State {
             }
             Message::NoOp => Task::none(),
             Message::ExpandDirectory(path) => {
-                // 通过 Option 链式调用，把路径一路 map 成是否需要加载
-                let needs_load = self
-                    .root_file_tree_entry
-                    .as_mut()
-                    .and_then(|root| find_entry_by_path(root, &path))
-                    .and_then(|entry| match entry {
-                        FileTreeEntry::Directory {
-                            expanded,
-                            children_loaded,
-                            children,
-                            ..
-                        } => {
-                            *expanded = !*expanded;
-                            if *expanded {
-                                // 展开且未加载 → 需要加载
-                                (!*children_loaded).then(|| true)
-                            } else {
-                                // 折叠 → 清空缓存，无需加载
-                                children.clear();
-                                *children_loaded = false;
-                                Some(false)
+                // 检查是否是 Recents 目录
+                let is_recents = path == PathBuf::from("__RECENTS__");
+
+                // 现在目录树根节点有recent和home目录两个，需要遍历查找
+                let needs_load = {
+                    let mut found = false;
+                    // 遍历所有根节点（包括recent和home）
+                    for root in self.root_file_tree_entry.iter_mut() {
+                        if let Some(entry) = find_entry_by_path(root, &path) {
+                            match entry {
+                                FileTreeEntry::Directory {
+                                    expanded,
+                                    children_loaded,
+                                    children,
+                                    ..
+                                } => {
+                                    *expanded = !*expanded;
+                                    if *expanded {
+                                        if is_recents {
+                                            // Recents 目录的子项在初始化时已加载，标记为已加载
+                                            *children_loaded = true;
+                                            found = false;
+                                        } else {
+                                            // 展开且未加载 → 需要加载
+                                            found = !*children_loaded;
+                                        }
+                                    } else {
+                                        if !is_recents {
+                                            // 折叠 → 清空缓存，无需加载（Recents目录保持子项）
+                                            children.clear();
+                                            *children_loaded = false;
+                                        }
+                                        found = false;
+                                    }
+                                }
+                                _ => {}
                             }
+                            break;
                         }
-                        _ => None,
-                    })
-                    .unwrap_or(false); // 都不是目录就 false
+                    }
+                    found
+                };
 
                 // 2. 需要加载时再重新借一次，只把目标节点可变引用传进去
                 if needs_load {
-                    if let Some(root_entry) = &mut self.root_file_tree_entry {
-                        load_directory_children(root_entry, path.clone());
+                    for root_entry in self.root_file_tree_entry.iter_mut() {
+                        if find_entry_by_path(root_entry, &path).is_some() {
+                            load_directory_children(root_entry, path.clone());
+                            break;
+                        }
                     }
                 }
 
                 // 列出当前目录下的图片
-                if let Ok(images) = fs::read_dir(path.clone()) {
+                if !is_recents && let Ok(images) = fs::read_dir(path.clone()) {
                     self.image_collection.clear();
                     for entry in images.flatten() {
                         let child_path = entry.path();
@@ -313,11 +366,29 @@ impl State {
                             );
                         }
                     }
+                } else if is_recents {
+                    // 处理 Recents 目录 - 更新图片集合为最近浏览的图片
+                    self.image_collection.clear();
+                    let recent_items = self.recent_manager.get_recent_items();
+                    for item in recent_items {
+                        self.image_collection.push(item.path().clone());
+                    }
+
+                    // 为每个图片异步加载缩略图
+                    for path in &self.image_collection {
+                        if !self.thumbnail_cache.contains_key(path) {
+                            let path_clone = path.clone();
+                            return Task::perform(
+                                async move { Message::LoadThumbnail(path_clone) },
+                                |msg| msg,
+                            );
+                        }
+                    }
                 }
                 Task::none() // 返回空命令
             }
             Message::PickImage(path) => {
-                self.current_path = path.clone();
+                self.current_path = path.parent().unwrap_or(&path).to_path_buf();
                 self.current_image = Some(path.clone());
                 self.current_image_index = self
                     .image_collection
@@ -470,6 +541,10 @@ impl State {
                 Task::none()
             }
             Message::LoadImage(path) => {
+                // Recent Image
+                self.recent_manager.add_item(path.clone());
+                self.recent_manager
+                    .save_to_file(dirs::data_dir().unwrap().join("recent.json"));
                 // 1. 加载图片
                 self.is_dragging = false; // 重置拖动状态
                 self.slider_value = 50; // 重置缩放条值
@@ -495,9 +570,60 @@ impl State {
                 let path_clone = path.clone();
                 Task::perform(
                     async move {
-                        // 在后台线程加载缩略图
-                        let handle = Handle::from_path(&path_clone);
-                        Message::ThumbnailLoaded(path_clone, handle)
+                        // 检查文件是否存在且可读
+                        if !path_clone.exists() || !path_clone.is_file() {
+                            eprintln!(
+                                "File does not exist or is not a file: {}",
+                                path_clone.display()
+                            );
+                            // 返回默认占位符
+                            let placeholder =
+                                Handle::from_rgba(80, 80, vec![200].repeat(80 * 80 * 4));
+                            return Message::ThumbnailLoaded(path_clone, placeholder);
+                        }
+
+                        // 检查文件扩展名
+                        let ext = path_clone
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+
+                        if !["png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp"]
+                            .contains(&ext.as_str())
+                        {
+                            eprintln!("Unsupported image format: {}", path_clone.display());
+                            let placeholder =
+                                Handle::from_rgba(80, 80, vec![150].repeat(80 * 80 * 4));
+                            return Message::ThumbnailLoaded(path_clone, placeholder);
+                        }
+
+                        // 尝试加载图片
+                        match image::open(&path_clone) {
+                            Ok(img) => {
+                                // 缩放到缩略图尺寸
+                                let thumbnail =
+                                    img.resize(80, 80, image::imageops::FilterType::Lanczos3);
+                                let rgba = thumbnail.to_rgba8();
+                                let (width, height) = rgba.dimensions();
+                                let handle = Handle::from_rgba(width, height, rgba.into_raw());
+                                Message::ThumbnailLoaded(path_clone, handle)
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "Failed to load thumbnail for {}: {}",
+                                    path_clone.display(),
+                                    e
+                                );
+                                // 返回错误占位符
+                                let error_placeholder = Handle::from_rgba(
+                                    80,
+                                    80,
+                                    vec![255, 100, 100, 255].repeat(80 * 80),
+                                );
+                                Message::ThumbnailLoaded(path_clone, error_placeholder)
+                            }
+                        }
                     },
                     |msg| msg,
                 )
@@ -575,76 +701,145 @@ impl State {
                 }
                 Task::none()
             }
+            Message::ToggleFullscreen => {
+                self.is_fullscreen = !self.is_fullscreen;
+                Task::none()
+            }
+            Message::EscPressed => {
+                if self.is_fullscreen {
+                    self.is_fullscreen = false;
+                }
+                Task::none()
+            }
         }
     }
 
     fn view(&self) -> Element<Message> {
-        let top_bar = container(row![
+        let top_bar = container(
             row![
-                text("📷").size(20).shaping(text::Shaping::Advanced), // Camera icon as a placeholder logo
-                text("Image Browser").size(20).align_x(Horizontal::Left)
-            ]
-            .spacing(5)
-            .width(Length::FillPortion(2)),
-            row![
+                // Left: App logo and title
                 row![
-                    button(text("Open"))
+                    text("📷").size(24).shaping(text::Shaping::Advanced),
+                    text("Image Browser")
+                        .size(18)
+                        .color(Color::from_rgb8(33, 37, 41))
+                        .font(iced::Font::MONOSPACE)
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center)
+                .width(Length::Fill),
+                // Center: Navigation buttons
+                row![
+                    button(text("Open").size(14))
                         .on_press(Message::SelectImage)
-                        .style(|theme, status| button_style::default(theme, status)),
-                    button(text("Next"))
+                        .style(|theme, status| button_style::default(theme, status))
+                        .padding([6, 12]),
+                    button(text("Next").size(14))
                         .on_press(Message::PickNextImage)
-                        .style(|theme, status| button_style::default(theme, status)),
-                    button(text("Previous"))
+                        .style(|theme, status| button_style::default(theme, status))
+                        .padding([6, 12]),
+                    button(text("Previous").size(14))
                         .on_press(Message::PickPreviousImage)
-                        .style(|theme, status| button_style::default(theme, status)),
-                    button(text("Zoom"))
+                        .style(|theme, status| button_style::default(theme, status))
+                        .padding([6, 12]),
+                    button(text("Zoom").size(14))
                         .on_press(Message::OpenResamplingBar)
-                        .style(|theme, status| button_style::default(theme, status)),
-                    button(text("Hand"))
+                        .style(|theme, status| button_style::default(theme, status))
+                        .padding([6, 12]),
+                    button(text("🖐").shaping(text::Shaping::Advanced).size(14))
                         .on_press(Message::ToggleHandTool)
                         .style(move |theme, status| {
                             if self.hand_tool_active {
-                                button_style::primary(theme, status) // 激活时使用主要样式
+                                button_style::primary(theme, status)
                             } else {
-                                button_style::default(theme, status) // 未激活时使用默认样式
+                                button_style::default(theme, status)
                             }
-                        }),
-                    button(text("Share"))
-                        .on_press(Message::NoOp)
-                        .style(|theme, status| button_style::default(theme, status)),
+                        })
+                        .padding([6, 12]),
                 ]
-                .spacing(5)
+                .spacing(8)
+                .align_y(iced::Alignment::Center)
                 .width(Length::Shrink),
+                // Right: Fullscreen button
                 container(
-                    button(text("Fullscreen"))
-                        .on_press(Message::NoOp)
-                        .style(|theme, status| button_style::primary(theme, status)),
+                    button(text("Fullscreen").size(14))
+                        .on_press(Message::ToggleFullscreen)
+                        .style(|theme, status| button_style::primary(theme, status))
+                        .padding([8, 16])
                 )
                 .align_x(Horizontal::Right)
-                .padding([0, 20]) // Add minimal margin to the right
-                .width(Length::Shrink),
+                .width(Length::Fill),
             ]
-            .spacing(5)
-            .width(Length::FillPortion(3))
-        ])
+            .align_y(iced::Alignment::Center)
+            .spacing(20),
+        )
+        .padding([12, 20])
         .style(|_theme| container::Style {
-            background: Some(Background::Color(Color::from_rgb8(200, 200, 200))),
+            background: Some(Background::Color(Color::WHITE)),
+            border: iced::Border {
+                radius: 0.0.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            shadow: iced::Shadow {
+                offset: Vector::new(0.0, 1.0),
+                blur_radius: 3.0.into(),
+                color: Color::from_rgba8(0, 0, 0, 0.1),
+            },
             ..Default::default()
         });
+        let recent_content = self.view_file_tree(&self.root_file_tree_entry[0], 0);
+        let file_tree_content = self.view_file_tree(&self.root_file_tree_entry[1], 0);
 
-        let file_tree_content = if let Some(file_tree_entry) = &self.root_file_tree_entry {
-            self.view_file_tree(file_tree_entry, 0)
-        } else {
-            column![].into()
-        };
-
-        let file_tree = container(scrollable(
-            column![file_tree_content].spacing(5).width(Length::Fill),
-        ))
-        .width(Length::FillPortion(1))
-        .padding(10)
+        let file_tree = container(
+            scrollable(
+                column![recent_content, file_tree_content]
+                    .spacing(8)
+                    .width(Length::Fill)
+                    .padding([8, 12]),
+            )
+            .style(|theme, _| iced::widget::scrollable::Style {
+                container: container::Style {
+                    background: Some(Background::Color(Color::TRANSPARENT)),
+                    ..Default::default()
+                },
+                vertical_rail: iced::widget::scrollable::Rail {
+                    background: Some(Background::Color(Color::from_rgba8(0, 0, 0, 0.1))),
+                    border: iced::Border {
+                        radius: 2.0.into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    scroller: iced::widget::scrollable::Scroller {
+                        color: Color::from_rgba8(0, 0, 0, 0.3),
+                        border: iced::Border {
+                            radius: 2.0.into(),
+                            width: 0.0,
+                            color: Color::TRANSPARENT,
+                        },
+                    },
+                },
+                horizontal_rail: iced::widget::scrollable::Rail {
+                    background: Some(Background::Color(Color::TRANSPARENT)),
+                    border: iced::Border::default(),
+                    scroller: iced::widget::scrollable::Scroller {
+                        color: Color::TRANSPARENT,
+                        border: iced::Border::default(),
+                    },
+                },
+                gap: Some(Background::Color(Color::TRANSPARENT)),
+            }),
+        )
+        .width(280)
+        .height(Length::Fill)
+        .padding([16, 0])
         .style(|_theme: &Theme| container::Style {
-            background: Some(iced::Background::Color(color!(0xF0F0F0))),
+            background: Some(Background::Color(Color::from_rgb8(248, 249, 250))),
+            border: iced::Border {
+                radius: 0.0.into(),
+                width: 1.0,
+                color: Color::from_rgb8(222, 226, 230),
+            },
             ..Default::default()
         });
 
@@ -665,24 +860,58 @@ impl State {
                 if let Some(path) = &self.current_image {
                     iced::widget::image::Handle::from_path(path)
                 } else {
-                    iced::widget::image::Handle::from_path("default_image.png") // 默认图片路径
+                    // 创建一个空白占位符
+                    iced::widget::image::Handle::from_rgba(
+                        400,
+                        300,
+                        vec![248, 249, 250, 255].repeat(400 * 300),
+                    )
                 }
             };
 
-            // 关键：把平移偏移量变成负 padding
-            // let translate_x = -self.pan_offset.x;
-            // let translate_y = -self.pan_offset.y;
-
             let img: iced::widget::Image<Handle> = iced::widget::image(handle)
                 .width(Length::Fill)
-                .height(Length::Fill);
-
-            // 用 Container 的 padding 实现平移
-            let positioned: Element<_> = container(img)
-                // .padding(iced::Padding::from([translate_y, translate_x]))
-                .width(Length::Fill)
                 .height(Length::Fill)
-                .into();
+                .content_fit(iced::ContentFit::Contain);
+
+            // 用现代化的容器包装图片
+            let positioned: Element<_> = if self.is_fullscreen {
+                // 全屏模式：去除所有装饰，让图片占满屏幕
+                container(img)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(0)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .style(|_theme| container::Style {
+                        background: Some(Background::Color(Color::BLACK)),
+                        border: iced::Border::default(),
+                        shadow: iced::Shadow::default(),
+                        ..Default::default()
+                    })
+                    .into()
+            } else {
+                // 非全屏模式：保持原有装饰样式
+                container(img)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(20)
+                    .style(|_theme| container::Style {
+                        background: Some(Background::Color(Color::from_rgb8(250, 250, 250))),
+                        border: iced::Border {
+                            radius: 8.0.into(),
+                            width: 1.0,
+                            color: Color::from_rgb8(222, 226, 230),
+                        },
+                        shadow: iced::Shadow {
+                            offset: Vector::new(0.0, 2.0),
+                            blur_radius: 8.0.into(),
+                            color: Color::from_rgba8(0, 0, 0, 0.1),
+                        },
+                        ..Default::default()
+                    })
+                    .into()
+            };
 
             // 只在打开时显示滑块和算法选择
             let slider_layer = if self.resampling_bar_opened {
@@ -692,37 +921,79 @@ impl State {
                     .map(|&resampling_type| {
                         let is_selected = resampling_type == self.resampling_type;
                         let btn: Element<_> = button(text(resampling_type.name()).size(12))
-                            .padding(4)
+                            .padding([6, 12])
                             .style(move |theme, status| {
                                 if is_selected {
-                                    button_style::primary(theme, status) // 选中的算法使用主要样式
+                                    button_style::primary(theme, status)
                                 } else {
-                                    button_style::default(theme, status) // 未选中的算法使用默认样式
+                                    button_style::default(theme, status)
                                 }
                             })
                             .on_press(Message::ResamplingTypeChanged(resampling_type))
-                            .into(); // 将Button转换为Element
+                            .into();
                         btn
                     })
                     .collect::<Vec<_>>();
 
-                let algorithm_buttons = row(buttons).spacing(5).padding(5);
+                let algorithm_buttons = row(buttons).spacing(8).padding([8, 0]);
 
                 // 组合滑块和算法选择
                 container(
                     column![
+                        text("Zoom Level")
+                            .size(14)
+                            .color(Color::from_rgb8(52, 58, 64)),
                         slider(50..=150, self.slider_value, Message::SliderChanged)
                             .default(50)
                             .shift_step(5)
-                            .on_release(Message::SliderReleased),
+                            .on_release(Message::SliderReleased)
+                            .style(|theme, _| iced::widget::slider::Style {
+                                rail: iced::widget::slider::Rail {
+                                    backgrounds: (
+                                        Background::Color(Color::from_rgb8(222, 226, 230)),
+                                        Background::Color(Color::from_rgb8(13, 110, 253)),
+                                    ),
+                                    width: 4.0,
+                                    border: iced::Border {
+                                        color: Color::TRANSPARENT,
+                                        width: 2.0.into(),
+                                        radius: 2.0.into()
+                                    },
+                                },
+                                handle: iced::widget::slider::Handle {
+                                    shape: iced::widget::slider::HandleShape::Circle {
+                                        radius: 8.0.into()
+                                    },
+                                    background: Background::Color(Color::WHITE),
+                                    border_color: Color::from_rgb8(13, 110, 253),
+                                    border_width: 2.0,
+                                },
+                            }),
+                        text("Resampling Algorithm")
+                            .size(14)
+                            .color(Color::from_rgb8(52, 58, 64)),
                         algorithm_buttons
                     ]
-                    .spacing(5),
+                    .spacing(12),
                 )
-                .width(250)
-                .padding(8)
-                .center_x(250) // 水平居中
-                .align_y(iced::alignment::Vertical::Top) // 贴顶部
+                .width(380)
+                .padding(16)
+                .style(|_theme| container::Style {
+                    background: Some(Background::Color(Color::WHITE)),
+                    border: iced::Border {
+                        radius: 12.0.into(),
+                        width: 1.0,
+                        color: Color::from_rgb8(222, 226, 230),
+                    },
+                    shadow: iced::Shadow {
+                        offset: Vector::new(0.0, 4.0),
+                        blur_radius: 12.0.into(),
+                        color: Color::from_rgba8(0, 0, 0, 0.15),
+                    },
+                    ..Default::default()
+                })
+                .center_x(380)
+                .align_y(iced::alignment::Vertical::Top)
                 .into()
             } else {
                 iced::Element::new(iced::widget::Space::new(0, 0))
@@ -743,121 +1014,241 @@ impl State {
                 positioned
             };
 
-            Stack::new()
-                .push(image_with_mouse_events) // 底层：带鼠标事件的图片
-                .push(slider_layer) // 顶层：滑块
+            if self.is_fullscreen {
+                // 全屏模式：简化布局，只显示图片和必要的滑块
+                container(
+                    Stack::new()
+                        .push(image_with_mouse_events) // 底层：带鼠标事件的图片
+                        .push(slider_layer), // 顶层：滑块
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(0)
+                .style(|_theme| container::Style {
+                    background: Some(Background::Color(Color::BLACK)),
+                    ..Default::default()
+                })
                 .into()
+            } else {
+                // 非全屏模式：保持原有样式
+                container(
+                    Stack::new()
+                        .push(image_with_mouse_events) // 底层：带鼠标事件的图片
+                        .push(slider_layer), // 顶层：滑块
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(16)
+                .style(|_theme| container::Style {
+                    background: Some(Background::Color(Color::from_rgb8(248, 249, 250))),
+                    ..Default::default()
+                })
+                .into()
+            }
         };
 
         let images = self.image_collection.clone();
-        //  生成缩略图行（横向滚动）
-        // 创建一个行，其宽度设置为Shrink，这样它可以根据内容扩展而不是填充可用空间
+
+        // 创建缩略图标题栏
+        let thumbnail_header = container(
+            row![
+                text("Tolores")
+                    .size(16)
+                    .color(Color::from_rgb8(33, 37, 41))
+                    .font(iced::Font::MONOSPACE),
+                container(text("")).width(Length::Fill),
+                button(text("⚙").shaping(text::Shaping::Advanced))
+                    .style(|theme, status| button_style::transparent(theme, status))
+                    .padding([4, 8])
+                    .on_press(Message::NoOp),
+                button(text("🗐").shaping(text::Shaping::Advanced))
+                    .style(|theme, status| button_style::transparent(theme, status))
+                    .padding([4, 8])
+                    .on_press(Message::NoOp),
+                button(text("✕").shaping(text::Shaping::Advanced))
+                    .style(|theme, status| button_style::transparent(theme, status))
+                    .padding([4, 8])
+                    .on_press(Message::NoOp),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+        )
+        .padding([12, 16])
+        .style(|_theme| container::Style {
+            background: Some(Background::Color(Color::WHITE)),
+            border: iced::Border {
+                radius: 0.0.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            ..Default::default()
+        });
+
+        // 生成缩略图行
         let thumbnails_row = row![]
-            .spacing(10)
-            .padding(10)
-            .width(Length::Shrink) // 对于水平滚动，内容必须使用Shrink而不是Fill
-            // 把每张图做成 80×80 的按钮
+            .spacing(12)
+            .padding([0, 16])
+            .width(Length::Shrink)
             .extend(images.into_iter().enumerate().map(|(idx, p)| {
-                // 是否当前选中的那一张
                 let is_selected = idx == self.current_image_index;
 
-                // 使用缓存的缩略图或默认占位符
                 let image_handle = if let Some(handle) = self.thumbnail_cache.get(&p) {
                     handle.clone()
                 } else {
-                    // 如果缓存中没有，使用占位符并触发加载
-                    Handle::from_rgba(1, 1, vec![255, 255, 255, 255])
+                    Handle::from_rgba(80, 80, vec![248, 249, 250, 255].repeat(80 * 80))
                 };
 
-                container(
-                    button(
-                        iced::widget::image(image_handle)
-                            .width(Length::Fixed(80.0))
-                            .height(Length::Fixed(80.0))
-                            .content_fit(iced::ContentFit::Cover),
-                    )
-                    .padding(2)
-                    // 根据是否选中切换样式
-                    .style(move |theme, status| {
-                        if is_selected {
-                            button_style::highlighted(theme, status) // 高亮边框
-                        } else {
-                            button_style::transparent(theme, status) // 普通透明
-                        }
-                    })
-                    .on_press(Message::PickImage(p)),
+                button(
+                    iced::widget::image(image_handle)
+                        .width(Length::Fixed(80.0))
+                        .height(Length::Fixed(80.0))
+                        .content_fit(iced::ContentFit::Cover),
                 )
-                .width(Length::Fixed(84.0)) // 固定宽度 = 图片宽度(80) + padding(2*2)
-                .height(Length::Fixed(84.0)) // 固定高度 = 图片高度(80) + padding(2*2)
+                .style(move |theme, status| {
+                    if is_selected {
+                        button_style::thumbnail_selected(theme, status)
+                    } else {
+                        button_style::thumbnail(theme, status)
+                    }
+                })
+                .on_press(Message::PickImage(p))
                 .into()
             }));
 
         // 将行包装在水平滚动容器中
-        let collection_display = scrollable(thumbnails_row)
-            .direction(Direction::Horizontal(scrollable::Scrollbar::new()));
+        let thumbnails_scroll = scrollable(thumbnails_row)
+            .direction(Direction::Horizontal(scrollable::Scrollbar::new()))
+            .style(|theme, _| iced::widget::scrollable::Style {
+                container: container::Style {
+                    background: Some(Background::Color(Color::WHITE)),
+                    ..Default::default()
+                },
+                vertical_rail: iced::widget::scrollable::Rail {
+                    background: Some(Background::Color(Color::TRANSPARENT)),
+                    border: iced::Border::default(),
+                    scroller: iced::widget::scrollable::Scroller {
+                        color: Color::TRANSPARENT,
+                        border: iced::Border::default(),
+                    },
+                },
+                horizontal_rail: iced::widget::scrollable::Rail {
+                    background: Some(Background::Color(Color::from_rgba8(0, 0, 0, 0.05))),
+                    border: iced::Border {
+                        radius: 3.0.into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    scroller: iced::widget::scrollable::Scroller {
+                        color: Color::from_rgba8(0, 0, 0, 0.3),
+                        border: iced::Border {
+                            radius: 3.0.into(),
+                            width: 0.0,
+                            color: Color::TRANSPARENT,
+                        },
+                    },
+                },
+                gap: Some(Background::Color(Color::TRANSPARENT)),
+            });
 
-        let main_content = row![
-            file_tree,
-            column![
-                main_image_display,
-                container(collection_display)
-                    .height(Length::Fixed(100.0)) // 缩略图区域高度
-                    .width(Length::Fill)
-                    .style(|_theme| container::Style {
-                        background: Some(Background::Color(Color::from_rgb8(240, 240, 240))),
-                        ..Default::default()
-                    }),
+        let collection_display = column![thumbnail_header, thumbnails_scroll];
+
+        if self.is_fullscreen {
+            // 全屏模式：只显示图片，隐藏其他UI元素
+            main_image_display
+        } else {
+            // 非全屏模式：显示完整界面
+            let main_content = row![
+                file_tree,
+                column![
+                    main_image_display,
+                    container(collection_display)
+                        .height(Length::Fixed(140.0))
+                        .width(Length::Fill)
+                        .style(|_theme| container::Style {
+                            background: Some(Background::Color(Color::WHITE)),
+                            border: iced::Border {
+                                radius: 0.0.into(),
+                                width: 1.0,
+                                color: Color::from_rgb8(222, 226, 230),
+                            },
+                            shadow: iced::Shadow {
+                                offset: Vector::new(0.0, -1.0),
+                                blur_radius: 3.0.into(),
+                                color: Color::from_rgba8(0, 0, 0, 0.05),
+                            },
+                            ..Default::default()
+                        }),
+                ]
+                .width(Length::FillPortion(4)) // This column takes the remaining space
+                .height(Length::Fill) // Fill remaining height
             ]
-            .width(Length::FillPortion(4)) // This column takes the remaining space
-            .height(Length::Fill) // Fill remaining height
-        ]
-        .width(Length::Fill)
-        .height(Length::Fill);
-
-        column![top_bar, main_content,]
             .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+            .height(Length::Fill);
+
+            column![top_bar, main_content,]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        }
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        iced::keyboard::on_key_press(|key, _modifiers| match key.as_ref() {
+            keyboard::Key::Named(keyboard::key::Named::Escape) => Some(Message::EscPressed),
+            _ => None,
+        })
     }
 
     fn view_file_tree(&self, entry: &FileTreeEntry, level: usize) -> Element<'_, Message> {
-        let indent = (level as f32) * 15.0; // 每级增加 15 像素缩进
+        let indent = (level as f32) * 16.0;
 
-        let (display_text, on_press_msg) = match entry {
-            FileTreeEntry::Directory { path, name, .. } => {
-                let icon = "📁"; // Folder icon
-                let text_str = format!("{} {}", icon, name);
+        let (icon, name, on_press_msg, is_expanded) = match entry {
+            FileTreeEntry::Directory {
+                path,
+                name,
+                expanded,
+                ..
+            } => {
+                let folder_icon = if *expanded { "📂" } else { "📁" };
                 (
-                    text_str,
-                    Message::ExpandDirectory(path.clone()), // On press, toggle expansion
+                    folder_icon,
+                    name.clone(),
+                    Message::ExpandDirectory(path.clone()),
+                    *expanded,
                 )
             }
             FileTreeEntry::File { path, name } => {
-                let image_icon = "📷"; // Image icon
-                let text_str = format!("{} {}", image_icon, name);
-                (
-                    text_str,
-                    Message::PickImage(path.clone()), // On press, select image
-                )
+                ("🖼", name.clone(), Message::PickImage(path.clone()), false)
             }
         };
 
-        let mut item_column = column![
-            container(
-                button(text(display_text).size(14).shaping(text::Shaping::Advanced)) // 明确指定渲染器类型
-                    .on_press(on_press_msg)// Use on_release_some for optional message
-                    .width(Length::Fill) // 让按钮填充可用宽度
-                    .style(|theme, status| button_style::transparent(theme, status)), // 使用透明按钮样式
+        let item_button = container(
+            button(
+                row![
+                    text(icon).shaping(text::Shaping::Advanced).size(14),
+                    text(name).size(13).color(Color::from_rgb8(52, 58, 64))
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
             )
-            .padding(iced::Padding { top: 0.0, right: 0.0, bottom: 0.0, left: indent as f32 }) // 应用缩进
-        ];
+            .on_press(on_press_msg)
+            .width(Length::Fill)
+            .style(|theme, status| button_style::sidebar_item(theme, status))
+            .padding([6, 8]),
+        )
+        .padding(iced::Padding {
+            top: 1.0,
+            right: 0.0,
+            bottom: 1.0,
+            left: indent,
+        });
 
-        // 如果是展开的目录，并且子节点已加载，则递归渲染子节点
+        let mut item_column = column![item_button];
+
         if let FileTreeEntry::Directory {
             expanded, children, ..
         } = entry
         {
-            //println!("Rendering directory: {} (expanded: {})", entry.name(), expanded);
             if *expanded {
                 for child_entry in children.iter() {
                     item_column = item_column.push(self.view_file_tree(child_entry, level + 1));
@@ -1022,5 +1413,7 @@ fn load_directory_children(root_entry: &mut FileTreeEntry, target_path: PathBuf)
 }
 
 fn main() -> iced::Result {
-    iced::run("Image Browser", State::update, State::view)
+    iced::application("Image Browser", State::update, State::view)
+        .subscription(State::subscription)
+        .run()
 }
