@@ -69,12 +69,24 @@ impl RecentManager {
         &self.recent_items
     }
 
+    pub fn delete_item(&mut self, path: &PathBuf) -> Result<(), Box<dyn Error>> {
+        if let Some(index) = self.recent_items.iter().position(|item| item.path == *path) {
+            self.recent_items.remove(index);
+        }
+        Ok(())
+    }
+
     pub fn load_from_file(path: PathBuf) -> Result<RecentManager, Box<dyn Error>> {
         if !path.is_file() {
             return Ok(RecentManager::new(10));
         }
         let content = fs::read_to_string(path)?;
-        let manager: RecentManager = serde_json::from_str(&content)?;
+        let mut manager: RecentManager = serde_json::from_str(&content)?;
+        for item in manager.clone().recent_items.iter() {
+            if !item.path().exists() {
+                manager.delete_item(&item.path)?;
+            }
+        }
         Ok(manager)
     }
 

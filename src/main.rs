@@ -8,7 +8,7 @@ use iced::{
     color,
     widget::{column, container, row, scrollable, text},
 };
-use image::{GenericImageView, ImageBuffer, Rgb};
+use image::{GenericImageView, ImageBuffer, ImageReader, Rgb};
 use resize::Type::{Catrom, Lanczos3, Mitchell, Point, Triangle};
 use rfd::FileDialog;
 use rgb::FromSlice;
@@ -18,9 +18,11 @@ use std::thread::sleep;
 
 mod button_style;
 mod smart_directory;
+pub mod cos_client;
 
 use smart_directory::RecentManager;
 
+use crate::cos_client::{CosFunction, TecentCosUtil};
 use crate::smart_directory::RecentItem;
 
 // 定义缩放算法类型
@@ -121,6 +123,7 @@ enum Message {
     MouseMoved(iced::Point),               // 鼠标移动事件
     ToggleFullscreen,                      // 切换全屏模式
     EscPressed,                            // ESC按键事件
+    UploadToCloud(PathBuf), // 上传到云端
 }
 
 #[derive(Debug, Clone)]
@@ -444,7 +447,7 @@ impl State {
                 let now = std::time::Instant::now();
                 let elapsed = now.duration_since(self.last_resize_time);
 
-                if elapsed.as_millis() < 500 {
+                if elapsed.as_millis() < 300 {
                     // 如果时间间隔太短，不执行缩放，等待下一次滑块变化
                     return Task::none();
                 }
@@ -473,7 +476,7 @@ impl State {
                 Task::perform(
                     async {
                         // 等待800ms，确保用户真的停止了拖动
-                        sleep(std::time::Duration::from_millis(500));
+                        sleep(std::time::Duration::from_millis(300));
                         Message::FinalizeDragging
                     },
                     |msg| msg,
@@ -543,7 +546,7 @@ impl State {
             Message::LoadImage(path) => {
                 // Recent Image
                 self.recent_manager.add_item(path.clone());
-                self.recent_manager
+                let _ = self.recent_manager
                     .save_to_file(dirs::data_dir().unwrap().join("recent.json"));
                 // 1. 加载图片
                 self.is_dragging = false; // 重置拖动状态
@@ -555,11 +558,12 @@ impl State {
                 self.is_panning = false; // 重置拖动状态
                 self.pan_start_position = None; // 重置拖动开始位置
 
-                if let Ok(img) = image::open(&path) {
+                if let Ok(img) = ImageReader::open(path.clone().as_path()).expect("open image failed").decode() {
                     let rgb_img = img.to_rgb8();
                     self.original = Some(rgb_img.clone());
 
-                    Task::perform(async move { Message::LoadScaledBytes }, |msg| msg)
+                    let _ = Task::perform(async move { Message::LoadScaledBytes }, |msg| msg);
+                    Task::perform(async move { Message::UploadToCloud(path.clone())}, |msg| msg)
                 } else {
                     eprintln!("Failed to load image: {}", path.display());
                     Task::none()
@@ -599,7 +603,7 @@ impl State {
                         }
 
                         // 尝试加载图片
-                        match image::open(&path_clone) {
+                        match ImageReader::open(path_clone.clone().as_path()).expect("open image failed").decode() {
                             Ok(img) => {
                                 // 缩放到缩略图尺寸
                                 let thumbnail =
@@ -709,6 +713,9 @@ impl State {
                 if self.is_fullscreen {
                     self.is_fullscreen = false;
                 }
+                Task::none()
+            }
+            Message::UploadToCloud(path) => {
                 Task::none()
             }
         }
